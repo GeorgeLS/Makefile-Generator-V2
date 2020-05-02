@@ -1,9 +1,23 @@
 [package]
 name = "makegen"
-version = "0.1.0"
+version = "0.2.2"
 authors = ["Georgios Liontos <georgios.liontos@sgdigital.com>"]
 edition = "2018"
+readme = "README.md"
+repository = "https://github.com/GeorgeLS/Makefile-Generator-V2"
+categories = ["command-line-utilities"]
+exclude = ["build/**/*.o", "doc/**/*.html"]
+include = ["src/**/*", "Cargo.toml"]
+description = """
+makegen is a command line tool that automatically generates a Makefile.
+Please note that it only works for C/C++ projects and is more a of quick solution for
+small projects and not production level quality software.
+For more information about running makegen please refer to the README file.
+"""
+license = "GPL-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+walkdir = "2.3.1"
+clap = "2.33.0"
+lazy_static = "1.4.0"
