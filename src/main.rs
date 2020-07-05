@@ -14,7 +14,7 @@ use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = App::new("makegen")
-        .version("2.2")
+        .version("2.3")
         .author("George Liontos <georgeliontos98@gmail.com>")
         .about("Generate C/C++ makefiles quickly and easily!")
         .arg(

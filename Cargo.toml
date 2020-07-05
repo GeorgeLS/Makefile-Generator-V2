@@ -1,6 +1,6 @@
 [package]
 name = "makegen"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Georgios Liontos <georgios.liontos@sgdigital.com>"]
 edition = "2018"
 readme = "README.md"

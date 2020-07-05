@@ -125,7 +125,7 @@ fn generate_file_variables(makefile: &mut File, ctx: &GenerateContext) -> std::i
         .keys()
         .filter(|f| has_extension(f, ctx.cli.extension))
     {
-        generate_dependencies_variable_for_file(makefile, file, ctx)?;
+        generate_source_file_dependencies_variable_for_file(makefile, file, ctx)?;
     }
 
     writeln!(makefile)?;
@@ -133,45 +133,99 @@ fn generate_file_variables(makefile: &mut File, ctx: &GenerateContext) -> std::i
     Ok(())
 }
 
-fn generate_dependencies_variable_for_file(
+fn generate_object_file_dependencies_variable_for_file(
     makefile: &mut File,
     file: &str,
     ctx: &GenerateContext,
 ) -> std::io::Result<()> {
     let var_name = strip_extension(file);
-    let var_name = file_dependencies_var_name(&var_name);
+    let var_name = object_file_dependencies_var_name(var_name);
     write!(makefile, "{} := ", var_name)?;
 
-    write_file_dependencies(makefile, &file, ctx)?;
+    write_object_file_dependencies(makefile, &file, ctx)?;
     writeln!(makefile)?;
-
     Ok(())
 }
 
-fn write_file_dependencies(
+fn write_object_file_dependencies(
     makefile: &mut File,
-    filename: &str,
+    file: &str,
     ctx: &GenerateContext,
 ) -> std::io::Result<()> {
     let mut seen = HashSet::new();
-    write_file_dependecies_r(makefile, filename, &mut seen, ctx)?;
+    write_object_file_dependencies_r(makefile, file, &mut seen, ctx)?;
     Ok(())
 }
 
-fn write_file_dependecies_r(
+fn write_object_file_dependencies_r(
     makefile: &mut File,
     filename: &str,
     seen: &mut HashSet<String>,
     ctx: &GenerateContext,
 ) -> std::io::Result<()> {
-    if ctx.parse_result.dependency_map.contains_key(filename) {
-        write!(makefile, "{} ", filename)?;
-        let dependencies = &ctx.parse_result.dependency_map.get(filename).unwrap().0;
-        for dependency in dependencies {
-            if !seen.contains(dependency) {
-                seen.insert(dependency.to_owned());
-                write_file_dependecies_r(makefile, &dependency, seen, ctx)?;
-            }
+    write!(makefile, "$(ODIR)/{}.o ", escape_folder(strip_extension(filename)))?;
+    seen.insert(filename.to_owned());
+
+    let dependencies = &ctx.parse_result.dependency_map.get(filename).unwrap().0;
+    for dependency in dependencies
+        .iter()
+        .map(|d| format!("{}.{}", strip_extension(d), ctx.cli.extension))
+    {
+        if ctx.parse_result.dependency_map.contains_key(&dependency) && !seen.contains(&dependency)
+        {
+            write_object_file_dependencies_r(makefile, &dependency, seen, ctx)?;
+        }
+    }
+    Ok(())
+}
+
+fn generate_source_file_dependencies_variable_for_file(
+    makefile: &mut File,
+    file: &str,
+    ctx: &GenerateContext,
+) -> std::io::Result<()> {
+    let var_name = strip_extension(file);
+    let var_name = source_file_dependencies_var_name(&var_name);
+    write!(makefile, "{} := ", var_name)?;
+
+    write_source_file_dependencies(makefile, &file, ctx)?;
+    writeln!(makefile)?;
+
+    Ok(())
+}
+
+fn write_source_file_dependencies(
+    makefile: &mut File,
+    filename: &str,
+    ctx: &GenerateContext,
+) -> std::io::Result<()> {
+    let mut seen = HashSet::new();
+    write_source_file_dependecies_r(makefile, filename, &mut seen, ctx)?;
+    Ok(())
+}
+
+fn write_source_file_dependecies_r(
+    makefile: &mut File,
+    filename: &str,
+    seen: &mut HashSet<String>,
+    ctx: &GenerateContext,
+) -> std::io::Result<()> {
+    write!(makefile, "{} ", filename)?;
+    seen.insert(filename.to_owned());
+
+    let dependencies = &ctx.parse_result.dependency_map.get(filename).unwrap().0;
+    for dependency in dependencies {
+        if !seen.contains(dependency) {
+            seen.insert(dependency.to_owned());
+            write!(makefile, "{} ", dependency)?;
+        }
+
+        let dependency = strip_extension(dependency);
+        let dependency = std::format!("{}.{}", dependency, ctx.cli.extension);
+
+        if ctx.parse_result.dependency_map.contains_key(&dependency) && !seen.contains(&dependency)
+        {
+            write_source_file_dependecies_r(makefile, &dependency, seen, ctx)?;
         }
     }
 
@@ -188,15 +242,21 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
                     std::write!($makefile, "{} ", self::escape_folder(file))?;
                 }
 
-                std::writeln!($makefile, "\n")?;
+                writeln!(makefile, "\n")?;
 
                 for file in &$ctx.partitioned.$id {
+                    generate_object_file_dependencies_variable_for_file(
+                        makefile,
+                        &format!("{}.{}", file, ctx.cli.extension),
+                        ctx,
+                    )?;
+
                     std::writeln!(
                         $makefile,
-                        "{target}: $(ODIR) $({dep_var})\n\
+                        "\n{target}: $(ODIR) $({dep_var})\n\
                             \t$(CC) $({dep_var}) -o {out}\n",
                         target = self::escape_folder(file),
-                        dep_var = self::file_dependencies_var_name(file),
+                        dep_var = self::object_file_dependencies_var_name(file),
                         out = file
                     )?;
                 }
@@ -234,6 +294,12 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
     writeln!(makefile, "\n")?;
 
     for bin_file in &ctx.partitioned.standalone {
+        generate_object_file_dependencies_variable_for_file(
+            makefile,
+            &format!("{}.{}", bin_file, ctx.cli.extension),
+            ctx,
+        )?;
+
         let (prefix, name) = if *bin_file != main_file {
             ("bin_", *bin_file)
         } else {
@@ -242,11 +308,11 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
 
         writeln!(
             makefile,
-            "{prefix}{name}: $(ODIR) $({dep_var})\n\
+            "\n{prefix}{name}: $(ODIR) $({dep_var})\n\
                     \t$(CC) $({dep_var}) -o {out} $(LFLAGS)\n",
             prefix = prefix,
             name = escape_folder(name),
-            dep_var = file_dependencies_var_name(bin_file),
+            dep_var = object_file_dependencies_var_name(bin_file),
             out = name
         )?;
     }
@@ -254,6 +320,24 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
     generate_target!(makefile, ctx, tests);
     generate_target!(makefile, ctx, benchmarks);
     generate_target!(makefile, ctx, examples);
+
+    for file in ctx
+        .parse_result
+        .dependency_map
+        .keys()
+        .filter(|k| has_extension(k, ctx.cli.extension))
+        .map(|k| strip_extension(k))
+    {
+        writeln!(
+            makefile,
+            "$(ODIR)/{out}.o: $(ODIR) $({source_var})\n\
+                \t$(CC) -c {file}.{extension} -o $(ODIR)/{out}.o\n",
+            file = file,
+            source_var = source_file_dependencies_var_name(file),
+            extension = ctx.cli.extension,
+            out = escape_folder(file),
+        )?;
+    }
 
     generate_clean_target(makefile, ctx)?;
 
@@ -294,7 +378,17 @@ fn escape_folder(filename: &str) -> String {
 }
 
 #[inline]
-fn file_dependencies_var_name(filename: &str) -> String {
+fn file_dependencies_var_name(filename: &str, category: &str) -> String {
     let var_name = escape_folder(filename);
-    format!("{}_DEPS", var_name.to_ascii_uppercase())
+    format!("{}_{}_DEPS", var_name.to_ascii_uppercase(), category)
+}
+
+#[inline]
+fn source_file_dependencies_var_name(filename: &str) -> String {
+    file_dependencies_var_name(filename, "SOURCE")
+}
+
+#[inline]
+fn object_file_dependencies_var_name(filename: &str) -> String {
+    file_dependencies_var_name(filename, "OBJECT")
 }
