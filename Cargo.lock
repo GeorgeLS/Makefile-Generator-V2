@@ -64,7 +64,7 @@ checksum = "9457b06509d27052635f90d6466700c65095fdf75409b3fbdd903e988b886f49"
 
 [[package]]
 name = "makegen"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "clap",
  "lazy_static",

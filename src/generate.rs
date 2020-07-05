@@ -254,7 +254,7 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
                     std::writeln!(
                         $makefile,
                         "\n{target}: $(ODIR) $({dep_var})\n\
-                            \t$(CC) $({dep_var}) -o {out}\n",
+                            \t$(CC) $(CFLAGS) $({dep_var}) -o {out}\n",
                         target = self::escape_folder(file),
                         dep_var = self::object_file_dependencies_var_name(file),
                         out = file
@@ -309,7 +309,7 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
         writeln!(
             makefile,
             "\n{prefix}{name}: $(ODIR) $({dep_var})\n\
-                    \t$(CC) $({dep_var}) -o {out} $(LFLAGS)\n",
+                    \t$(CC) $(CFLAGS) $({dep_var}) -o {out} $(LFLAGS)\n",
             prefix = prefix,
             name = escape_folder(name),
             dep_var = object_file_dependencies_var_name(bin_file),
@@ -331,7 +331,7 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
         writeln!(
             makefile,
             "$(ODIR)/{out}.o: $(ODIR) $({source_var})\n\
-                \t$(CC) -c {file}.{extension} -o $(ODIR)/{out}.o\n",
+                \t$(CC) -c $(CFLAGS) {file}.{extension} -o $(ODIR)/{out}.o\n",
             file = file,
             source_var = source_file_dependencies_var_name(file),
             extension = ctx.cli.extension,
