@@ -5,22 +5,25 @@ use crate::{
 };
 use std::{collections::HashSet, fs::File, io::prelude::*};
 
-struct GenerateContext<'c, 'p, 'pr> {
+struct GenerateContext<'c, 'p, 'd> {
     cli: &'c Cli<'c>,
     partitioned: &'p PartitionedFiles<'p>,
-    parse_result: &'pr ParseResult,
+    dep_map: &'d DependencyMap,
+    dlls: &'d Vec<String>,
 }
 
-impl<'c, 'p, 'pr> GenerateContext<'c, 'p, 'pr> {
+impl<'c, 'p, 'd> GenerateContext<'c, 'p, 'd> {
     pub fn new(
         cli: &'c Cli,
         partitioned: &'p PartitionedFiles,
-        parse_result: &'pr ParseResult,
+        dep_map: &'d DependencyMap,
+        dlls: &'d Vec<String>,
     ) -> Self {
         Self {
             cli,
             partitioned,
-            parse_result,
+            dep_map,
+            dlls,
         }
     }
 }
@@ -81,10 +84,62 @@ impl<'f> PartitionedFiles<'f> {
     }
 }
 
+fn get_all_file_dependencies(file: &str, ext: &str, dep_map: &DependencyMap) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut file_deps = Vec::new();
+    get_all_file_dependencies_r(file, ext, dep_map, &mut seen, &mut file_deps);
+    file_deps
+}
+
+fn get_all_file_dependencies_r(
+    file: &str,
+    ext: &str,
+    dep_map: &DependencyMap,
+    seen: &mut HashSet<String>,
+    file_deps: &mut Vec<String>,
+) {
+    if dep_map.contains_key(file) {
+        file_deps.push(file.to_owned());
+        seen.insert(file.to_owned());
+
+        let dependencies = &dep_map.get(file).unwrap().0;
+        for dependency in dependencies {
+            if !seen.contains(dependency) {
+                get_all_file_dependencies_r(dependency, ext, dep_map, seen, file_deps);
+            }
+
+            let stripped = strip_extension(dependency);
+            let complementary_file = if has_extension(dependency, ext) {
+                format!("{}.h", stripped)
+            } else {
+                format!("{}.{}", stripped, ext)
+            };
+
+            if dep_map.contains_key(&complementary_file) && !seen.contains(&complementary_file) {
+                get_all_file_dependencies_r(&complementary_file, ext, dep_map, seen, file_deps);
+                // file_deps.push(complementary_file);
+            }
+        }
+    }
+}
+
+fn flatten_dependencies(dep_map: &DependencyMap, ext: &str) -> DependencyMap {
+    let mut new_dep_map = DependencyMap::new();
+
+    for file in dep_map.keys().filter(|f| has_extension(f, ext)) {
+        let file_deps = get_all_file_dependencies(file, ext, &dep_map);
+        let has_main = dep_map.get(file).unwrap().1;
+        new_dep_map.insert(file.to_owned(), (file_deps, has_main));
+    }
+
+    new_dep_map
+}
+
 pub fn generate_makefile(cli: &Cli, parse_result: ParseResult) -> std::io::Result<()> {
     let mut makefile = File::create("Makefile")?;
+    let dep_map = flatten_dependencies(&parse_result.dependency_map, cli.extension);
     let partitioned = PartitionedFiles::partition(cli, &parse_result.dependency_map);
-    let ctx = GenerateContext::new(cli, &partitioned, &parse_result);
+    let ctx = GenerateContext::new(cli, &partitioned, &dep_map, &parse_result.dlls);
 
     generate_compiler_variables(&mut makefile, &ctx)?;
     generate_file_variables(&mut makefile, &ctx)?;
@@ -105,7 +160,6 @@ fn generate_compiler_variables(makefile: &mut File, ctx: &GenerateContext) -> st
         std = ctx.cli.standard,
         opt = ctx.cli.opt_level,
         link_flags = ctx
-            .parse_result
             .dlls
             .iter()
             .map(|dll| format!("-l{}", dll))
@@ -119,12 +173,7 @@ fn generate_compiler_variables(makefile: &mut File, ctx: &GenerateContext) -> st
 fn generate_file_variables(makefile: &mut File, ctx: &GenerateContext) -> std::io::Result<()> {
     writeln!(makefile, "\nODIR := .OBJ\n")?;
 
-    for file in ctx
-        .parse_result
-        .dependency_map
-        .keys()
-        .filter(|f| has_extension(f, ctx.cli.extension))
-    {
+    for file in ctx.dep_map.keys() {
         generate_source_file_dependencies_variable_for_file(makefile, file, ctx)?;
     }
 
@@ -142,40 +191,16 @@ fn generate_object_file_dependencies_variable_for_file(
     let var_name = object_file_dependencies_var_name(var_name);
     write!(makefile, "{} := ", var_name)?;
 
-    write_object_file_dependencies(makefile, &file, ctx)?;
-    writeln!(makefile)?;
-    Ok(())
-}
-
-fn write_object_file_dependencies(
-    makefile: &mut File,
-    file: &str,
-    ctx: &GenerateContext,
-) -> std::io::Result<()> {
-    let mut seen = HashSet::new();
-    write_object_file_dependencies_r(makefile, file, &mut seen, ctx)?;
-    Ok(())
-}
-
-fn write_object_file_dependencies_r(
-    makefile: &mut File,
-    filename: &str,
-    seen: &mut HashSet<String>,
-    ctx: &GenerateContext,
-) -> std::io::Result<()> {
-    write!(makefile, "$(ODIR)/{}.o ", escape_folder(strip_extension(filename)))?;
-    seen.insert(filename.to_owned());
-
-    let dependencies = &ctx.parse_result.dependency_map.get(filename).unwrap().0;
-    for dependency in dependencies
+    let dependencies = &ctx.dep_map.get(file).unwrap().0;
+    let object_dependencies = dependencies
         .iter()
-        .map(|d| format!("{}.{}", strip_extension(d), ctx.cli.extension))
-    {
-        if ctx.parse_result.dependency_map.contains_key(&dependency) && !seen.contains(&dependency)
-        {
-            write_object_file_dependencies_r(makefile, &dependency, seen, ctx)?;
-        }
-    }
+        .filter(|d| has_extension(d, ctx.cli.extension))
+        .map(|d| format!("$(ODIR)/{}.o", escape_folder(strip_extension(d))))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    writeln!(makefile, "{}", object_dependencies)?;
+
     Ok(())
 }
 
@@ -188,46 +213,8 @@ fn generate_source_file_dependencies_variable_for_file(
     let var_name = source_file_dependencies_var_name(&var_name);
     write!(makefile, "{} := ", var_name)?;
 
-    write_source_file_dependencies(makefile, &file, ctx)?;
-    writeln!(makefile)?;
-
-    Ok(())
-}
-
-fn write_source_file_dependencies(
-    makefile: &mut File,
-    filename: &str,
-    ctx: &GenerateContext,
-) -> std::io::Result<()> {
-    let mut seen = HashSet::new();
-    write_source_file_dependecies_r(makefile, filename, &mut seen, ctx)?;
-    Ok(())
-}
-
-fn write_source_file_dependecies_r(
-    makefile: &mut File,
-    filename: &str,
-    seen: &mut HashSet<String>,
-    ctx: &GenerateContext,
-) -> std::io::Result<()> {
-    write!(makefile, "{} ", filename)?;
-    seen.insert(filename.to_owned());
-
-    let dependencies = &ctx.parse_result.dependency_map.get(filename).unwrap().0;
-    for dependency in dependencies {
-        if !seen.contains(dependency) {
-            seen.insert(dependency.to_owned());
-            write!(makefile, "{} ", dependency)?;
-        }
-
-        let dependency = strip_extension(dependency);
-        let dependency = std::format!("{}.{}", dependency, ctx.cli.extension);
-
-        if ctx.parse_result.dependency_map.contains_key(&dependency) && !seen.contains(&dependency)
-        {
-            write_source_file_dependecies_r(makefile, &dependency, seen, ctx)?;
-        }
-    }
+    let dependencies = &ctx.dep_map.get(file).unwrap().0;
+    writeln!(makefile, "{}", dependencies.join(" "))?;
 
     Ok(())
 }
@@ -322,8 +309,7 @@ fn generate_targets(makefile: &mut File, ctx: &GenerateContext) -> std::io::Resu
     generate_target!(makefile, ctx, examples);
 
     for file in ctx
-        .parse_result
-        .dependency_map
+        .dep_map
         .keys()
         .filter(|k| has_extension(k, ctx.cli.extension))
         .map(|k| strip_extension(k))

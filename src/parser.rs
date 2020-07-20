@@ -5,19 +5,20 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 // The bool indicates whether the key (source file) has a main function in it or not
 pub type DependencyMap = HashMap<String, (Vec<String>, bool)>;
 
+#[derive(Debug)]
 pub struct ParseResult {
     pub dependency_map: DependencyMap,
     pub dlls: Vec<String>,
 }
 
-pub struct Parser<'conf> {
+pub struct Parser<'cli> {
     root_dir: PathBuf,
-    cli: &'conf Cli<'conf>,
+    cli: &'cli Cli<'cli>,
 }
 
 struct ParseContext<'c> {
@@ -56,30 +57,28 @@ impl<'c> ParseContext<'c> {
     }
 }
 
-impl<'conf> Parser<'conf> {
-    pub fn new(root_dir: PathBuf, config: &'conf Cli<'conf>) -> Self {
-        Self {
-            root_dir,
-            cli: config,
-        }
+impl<'cli> Parser<'cli> {
+    pub fn new(root_dir: PathBuf, cli: &'cli Cli<'cli>) -> Self {
+        Self { root_dir, cli }
     }
 
     pub fn parse(&self) -> Result<ParseResult, Box<dyn Error>> {
         let mut dependency_map = HashMap::new();
         let mut dlls = Vec::new();
 
+        let filter_criteria = |r: &Result<DirEntry, _>| {
+            r.as_ref()
+                .map(|e| e.file_type().is_file() && has_extension(e.path(), self.cli.extension))
+                .unwrap_or(false)
+        };
+
         let walker = WalkDir::new(&self.root_dir).into_iter();
         for entry in walker
             .filter_entry(|e| !is_hidden(e))
-            .filter(|e| e.as_ref().map(|e| e.file_type().is_file()).unwrap_or(false))
-            .filter(|e| {
-                e.as_ref()
-                    .map(|e| has_extension(e.path(), self.cli.extension))
-                    .unwrap_or(false)
-            })
+            .filter(|r| filter_criteria(r))
         {
-            let mut ctx = ParseContext::new(&mut dependency_map, &mut dlls);
             if let Ok(entry) = entry {
+                let mut ctx = ParseContext::new(&mut dependency_map, &mut dlls);
                 let filename = entry.path().strip_prefix(&self.root_dir)?;
                 read_file_and_get_include_files_recursively(&self.root_dir, filename, &mut ctx)?;
             }
@@ -89,6 +88,7 @@ impl<'conf> Parser<'conf> {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
 enum IncludeFile<'i> {
     System(&'i str),
     User(&'i str),
@@ -122,7 +122,7 @@ fn get_include_files_and_update_dlls(source: &str, dlls: &mut Vec<String>) -> Ve
     let mut include_files = Vec::new();
     source
         .lines()
-        .filter(|line| line.starts_with("#include"))
+        .filter(|line| line.trim_start().starts_with("#include"))
         .for_each(|line| {
             let include_file = extract_include_filename(line);
             match include_file {
@@ -178,4 +178,61 @@ fn read_file_and_get_include_files_recursively(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_include_filename_works() {
+        let source = r##"
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include "my_header.h"
+            #include "string_interning.h"
+
+            int main() {
+                return 0;
+            }
+        "##;
+
+        let includes: Vec<_> = source
+            .lines()
+            .filter(|l| l.trim_start().starts_with("#include"))
+            .map(|l| extract_include_filename(l))
+            .collect();
+
+        assert_eq!(
+            includes,
+            vec![
+                IncludeFile::System("stdio.h"),
+                IncludeFile::System("stdlib.h"),
+                IncludeFile::User("my_header.h"),
+                IncludeFile::User("string_interning.h")
+            ]
+        );
+    }
+
+    #[test]
+    fn get_include_files_and_update_dlls_works() {
+        let source = r##"
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include <math.h>
+            #include <pthread.h>
+            #include "my_header.h"
+            #include "string_interning.h"
+
+            int main() {
+                return 0;
+            }
+        "##;
+
+        let mut dlls = Vec::new();
+        let include_files = get_include_files_and_update_dlls(source, &mut dlls);
+
+        assert_eq!(include_files, vec!["my_header.h", "string_interning.h"]);
+        assert_eq!(dlls, vec!["m", "pthread"]);
+    }
 }
